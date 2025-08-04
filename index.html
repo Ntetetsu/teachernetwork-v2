@@ -77,9 +77,18 @@
     const teacherNameInput = document.getElementById('teacherName');
     const loadingDiv = document.getElementById('loading');
 
-    // Initialize DataSets globally to hold the state of the network
+    // --- Global State ---
     const nodes = new vis.DataSet([]);
     const edges = new vis.DataSet([]);
+    let teachersDB = [];
+    let teachersTenures = [];
+    let teacherIdMap = new Map();
+    let teacherNameMap = new Map();
+    let tenuresBySchoolMap = new Map();
+
+    // State for new features
+    let searchedTeachers = new Set(); // Keep track of all explicitly searched teachers
+    let excludedTenures = new Set(); // Keep track of excluded tenure records by a unique ID
 
     const options = {
         nodes: {
@@ -101,7 +110,7 @@
                 gravitationalConstant: -50,
                 centralGravity: 0.01,
                 springConstant: 0.08,
-                springLength: 150, // Increased length for better spacing
+                springLength: 150,
                 damping: 0.4,
                 avoidOverlap: 1
             }
@@ -112,57 +121,42 @@
         }
     };
 
-    // Create the network instance once
     const network = new vis.Network(container, { nodes, edges }, options);
 
-    // Event handler for clicking on a node
-    network.on("click", function (params) {
-        if (params.nodes.length > 0) {
-            const nodeId = params.nodes[0];
-            const clickedNode = nodes.get(nodeId);
-            if (clickedNode) {
-                teacherNameInput.value = clickedNode.label;
-                searchNetwork(false); // Perform an incremental search
-            }
-        }
-    });
-
-    let teachersDB = [];
-    let teachersTenures = [];
-    let teacherIdMap = new Map();
-    let teacherNameMap = new Map();
-    let tenuresBySchoolMap = new Map();
-
+    // --- Data Loading ---
     async function loadData() {
-        if (teachersDB.length === 0) {
-            try {
-                const [dbResponse, tenuresResponse1, tenuresResponse2] = await Promise.all([
-                    fetch('teachers_db.json'),
-                    fetch('teachers_tenures_part1.json'),
-                    fetch('teachers_tenures_part2.json')
-                ]);
-                teachersDB = await dbResponse.json();
-                const tenures1 = await tenuresResponse1.json();
-                const tenures2 = await tenuresResponse2.json();
-                teachersTenures = tenures1.concat(tenures2);
+        if (teachersDB.length > 0) return; // Do not reload if already loaded
+        try {
+            const [dbResponse, tenuresResponse1, tenuresResponse2] = await Promise.all([
+                fetch('teachers_db.json'),
+                fetch('teachers_tenures_part1.json'),
+                fetch('teachers_tenures_part2.json')
+            ]);
+            teachersDB = await dbResponse.json();
+            const tenures1 = await tenuresResponse1.json();
+            const tenures2 = await tenuresResponse2.json();
+            
+            let idCounter = 0;
+            teachersTenures = tenures1.concat(tenures2).map(t => ({ ...t, uniqueId: idCounter++ }));
 
-                for (const teacher of teachersDB) {
-                    teacherIdMap.set(teacher.id, teacher);
-                    teacherNameMap.set(teacher.name, teacher);
-                }
-
-                for (const tenure of teachersTenures) {
-                    if (!tenuresBySchoolMap.has(tenure.school)) {
-                        tenuresBySchoolMap.set(tenure.school, []);
-                    }
-                    tenuresBySchoolMap.get(tenure.school).push(tenure);
-                }
-            } catch (error) {
-                console.error("Failed to load or parse database files:", error);
+            for (const teacher of teachersDB) {
+                teacherIdMap.set(teacher.id, teacher);
+                teacherNameMap.set(teacher.name, teacher);
             }
+
+            for (const tenure of teachersTenures) {
+                if (!tenuresBySchoolMap.has(tenure.school)) {
+                    tenuresBySchoolMap.set(tenure.school, []);
+                }
+                tenuresBySchoolMap.get(tenure.school).push(tenure);
+            }
+        } catch (error) {
+            console.error("Failed to load or parse database files:", error);
+            alert("データベースの読み込みに失敗しました。");
         }
     }
 
+    // --- Core Logic ---
     function getRandomColor() {
         const letters = '0123456789ABCDEF';
         let color = '#';
@@ -172,129 +166,163 @@
         return color;
     }
 
-    async function searchNetwork(isNewSearch = false) { // Default to incremental search
-        const teacherName = teacherNameInput.value.trim();
-        if (!teacherName) {
-            alert('教員の名前を入力してください。');
-            return;
-        }
-
+    // Main function to recalculate and draw the entire network from the current state
+    function rebuildAndDrawNetwork() {
         loadingDiv.style.display = 'block';
 
-        if (isNewSearch) {
-            nodes.clear();
-            edges.clear();
-            historyList.innerHTML = '<h3>勤務履歴</h3>'; // Clear history only on new search
+        const allNodes = new Map();
+        const allEdges = new Map();
+        
+        historyList.innerHTML = '<h3>勤務履歴</h3>'; // Reset history panel
+
+        // Filter out excluded tenures from the main list once
+        const validTenures = teachersTenures.filter(t => !excludedTenures.has(t.uniqueId));
+        
+        // Rebuild the school-to-tenure map with only valid tenures
+        const validTenuresBySchoolMap = new Map();
+        for (const tenure of validTenures) {
+            if (!validTenuresBySchoolMap.has(tenure.school)) {
+                validTenuresBySchoolMap.set(tenure.school, []);
+            }
+            validTenuresBySchoolMap.get(tenure.school).push(tenure);
         }
 
-        await loadData();
-
-        try {
+        searchedTeachers.forEach(teacherName => {
             const teacher = teacherNameMap.get(teacherName);
+            if (!teacher) return;
 
-            if (!teacher) {
-                alert('教員が見つかりませんでした。');
-                loadingDiv.style.display = 'none';
-                return;
-            }
+            const searchColor = getRandomColor();
+            allNodes.set(teacher.id, { id: teacher.id, label: teacher.name, color: searchColor, font: { size: 24 } });
 
-            // If the teacher node already exists, searching for it again will simply
-            // reveal its connections and re-highlight it with a new color.
-
-            const teacherTenures = teachersTenures.filter(t => t.teacher_id === teacher.id);
-
+            const teacherTenures = validTenures.filter(t => t.teacher_id === teacher.id);
+            
             const colleagues = new Set();
             for (const tenure of teacherTenures) {
-                const schoolTenures = tenuresBySchoolMap.get(tenure.school) || [];
+                const schoolTenures = validTenuresBySchoolMap.get(tenure.school) || [];
                 for (const st of schoolTenures) {
                     if (st.teacher_id !== teacher.id) {
                         const overlaps = st.start_year < tenure.end_year && tenure.start_year < st.end_year;
                         const isNotExcluded = !(tenure.start_year === st.end_year || tenure.end_year === st.start_year);
-
                         if (overlaps && isNotExcluded) {
-                            const colleague = teacherIdMap.get(st.teacher_id);
-                            if (colleague) {
-                                colleagues.add(colleague.name);
-                            }
+                            colleagues.add(st.teacher_id);
                         }
                     }
                 }
             }
 
-            const searchColor = getRandomColor();
-            const centralNode = { id: teacher.id, label: teacher.name, color: searchColor, font: { size: 24 } };
-            const newNodes = [centralNode];
-            const newEdges = [];
-            const colleagueNames = Array.from(colleagues);
-
-            for (const colleagueName of colleagueNames) {
-                const colleague = teacherNameMap.get(colleagueName);
+            colleagues.forEach(colleagueId => {
+                const colleague = teacherIdMap.get(colleagueId);
                 if (colleague) {
-                    if (!nodes.get(colleague.id)) { // Add colleague only if not present
-                        newNodes.push({ id: colleague.id, label: colleague.name });
+                    if (!allNodes.has(colleague.id)) {
+                        allNodes.set(colleague.id, { id: colleague.id, label: colleague.name });
                     }
-                    // Create a unique edge ID to prevent duplicates
                     const edgeId = [teacher.id, colleague.id].sort().join('-');
-                    if (!edges.get(edgeId)) {
-                        newEdges.push({ id: edgeId, from: teacher.id, to: colleague.id });
+                    if (!allEdges.has(edgeId)) {
+                        allEdges.set(edgeId, { id: edgeId, from: teacher.id, to: colleague.id });
                     }
                 }
-            }
+            });
+            
+            // Render history for this teacher
+            renderHistory(teacher, searchColor);
+        });
 
-            const formattedHistory = teacherTenures.map(t => ({
-                school: t.school,
-                startYear: t.start_year,
-                endYear: t.end_year,
-                inferred: t.inferred_start
-            })).sort((a, b) => a.start_year - b.start_year);
+        nodes.clear();
+        edges.clear();
+        nodes.update(Array.from(allNodes.values()));
+        edges.update(Array.from(allEdges.values()));
+        
+        loadingDiv.style.display = 'none';
+        network.fit();
+    }
+    
+    function renderHistory(teacher, color) {
+        const historyHeader = document.createElement('h4');
+        historyHeader.textContent = teacher.name;
+        historyHeader.style.color = color;
+        historyList.appendChild(historyHeader);
 
-            // Add history for the new teacher
-            const historyHeader = document.createElement('h4');
-            historyHeader.textContent = teacher.name;
-            historyHeader.style.color = searchColor;
-            historyList.appendChild(historyHeader);
+        const teacherTenures = teachersTenures.filter(t => t.teacher_id === teacher.id)
+            .sort((a, b) => a.start_year - b.start_year);
 
-            if (formattedHistory.length > 0) {
-                formattedHistory.forEach(tenure => {
-                    const item = document.createElement('div');
-                    item.className = 'history-item';
-                    const inferredText = tenure.inferred ? '<span class="inferred">(推定)</span>' : '';
-                    item.innerHTML = `<p class="school">${tenure.school}</p><p>期間: ${tenure.startYear} - ${tenure.endYear} ${inferredText}</p>`;
-                    historyList.appendChild(item);
-                });
-            } else {
-                const noHistory = document.createElement('p');
-                noHistory.textContent = '勤務履歴が見つかりませんでした。';
-                historyList.appendChild(noHistory);
-            }
+        if (teacherTenures.length > 0) {
+            teacherTenures.forEach(tenure => {
+                const item = document.createElement('div');
+                item.className = 'history-item';
+                if (excludedTenures.has(tenure.uniqueId)) {
+                    item.style.backgroundColor = '#e0e0e0';
+                    item.style.textDecoration = 'line-through';
+                }
 
-            nodes.update(newNodes);
-            edges.update(newEdges);
+                const inferredText = tenure.inferred_start ? ' <span class="inferred">(推定)</span>' : '';
+                const text = `<p class="school">${tenure.school}</p><p>期間: ${tenure.start_year} - ${tenure.end_year}${inferredText}</p>`;
+                
+                const deleteButton = document.createElement('button');
+                deleteButton.textContent = '除外';
+                deleteButton.style.marginLeft = '10px';
+                deleteButton.style.padding = '2px 5px';
+                deleteButton.onclick = () => handleExcludeTenure(tenure.uniqueId);
 
-            if (newNodes.length === 1 && newEdges.length === 0) {
-                 alert('教員は見つかりましたが、関連する同僚データが見つかりませんでした。');
-            }
-
-        } catch (error) {
-            console.error('Error:', error);
-            alert('エラーが発生しました。詳細はコンソールを確認してください。');
-        } finally {
-            loadingDiv.style.display = 'none';
-            network.fit();
+                item.innerHTML = text;
+                item.appendChild(deleteButton);
+                historyList.appendChild(item);
+            });
+        } else {
+            const noHistory = document.createElement('p');
+            noHistory.textContent = '勤務履歴が見つかりませんでした。';
+            historyList.appendChild(noHistory);
         }
     }
 
-    // Bind the main search button to an incremental search
-    document.getElementById('search-button').onclick = () => searchNetwork(false);
+    async function handleSearch() {
+        const teacherName = teacherNameInput.value.trim();
+        if (!teacherName) {
+            alert('教員の名前を入力してください。');
+            return;
+        }
+        
+        await loadData();
+        
+        if (!teacherNameMap.has(teacherName)) {
+            alert('教員が見つかりませんでした。');
+            return;
+        }
 
-    // Bind the clear button to a new search (clearing the network)
-    document.getElementById('clear-button').onclick = () => searchNetwork(true);
+        searchedTeachers.add(teacherName);
+        rebuildAndDrawNetwork();
+    }
 
-    // Bind the Enter key to an incremental search
+    function handleClear() {
+        searchedTeachers.clear();
+        excludedTenures.clear();
+        nodes.clear();
+        edges.clear();
+        historyList.innerHTML = '<h3>勤務履歴</h3>';
+    }
+
+    function handleExcludeTenure(tenureId) {
+        excludedTenures.add(tenureId);
+        rebuildAndDrawNetwork();
+    }
+
+    // --- Event Listeners ---
+    network.on("click", function (params) {
+        if (params.nodes.length > 0) {
+            const nodeId = params.nodes[0];
+            const clickedNode = nodes.get(nodeId);
+            if (clickedNode) {
+                teacherNameInput.value = clickedNode.label;
+                handleSearch();
+            }
+        }
+    });
+
+    document.getElementById('search-button').onclick = handleSearch;
+    document.getElementById('clear-button').onclick = handleClear;
     teacherNameInput.addEventListener("keyup", function(event) {
         if (event.key === "Enter") {
             event.preventDefault();
-            searchNetwork(false);
+            handleSearch();
         }
     });
 </script>
