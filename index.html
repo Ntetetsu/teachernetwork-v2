@@ -198,12 +198,8 @@
                 return;
             }
 
-            // Check if the central node already exists
-            if (nodes.get(teacher.id)) {
-                alert('この教員は既にネットワークに存在します。');
-                loadingDiv.style.display = 'none';
-                return;
-            }
+            // If the teacher node already exists, searching for it again will simply
+            // reveal its connections and re-highlight it with a new color.
 
             const teacherTenures = teachersTenures.filter(t => t.teacher_id === teacher.id);
 
