@@ -223,19 +223,24 @@
                 for (const st of schoolTenures) {
                     if (st.teacher_id !== teacher.id) {
                         
-                        // ▼▼▼▼▼ エラー修正箇所 ▼▼▼▼▼
-                        // 在籍終了年が開始年と同じかそれより前の場合、最低1年間は在籍したとみなし、計算上の終了年を+1する
-                        const effectiveTenureEndYear = (tenure.end_year <= tenure.start_year) ? tenure.start_year + 1 : tenure.end_year;
-                        const effectiveStEndYear = (st.end_year <= st.start_year) ? st.start_year + 1 : st.end_year;
-
-                        // 修正後の値で期間の重複を判定
-                        const overlaps = st.start_year < effectiveTenureEndYear && tenure.start_year < effectiveStEndYear;
+                        // ▼▼▼▼▼ エラー修正箇所（新しい判定ロジック） ▼▼▼▼▼
+                        // 在籍開始年と、在籍が確認されている最終年を取得します。
+                        // end_yearがstart_yearより小さい不正なデータの場合、start_yearと同じ（単年度在籍）とみなします。
+                        const tenureStart = tenure.start_year;
+                        const tenureEnd = (tenure.end_year < tenure.start_year) ? tenure.start_year : tenure.end_year;
                         
-                        // 入れ替わり（A先生が去った年にB先生が来た、など）を除外する判定
-                        const isNotExcluded = !(tenure.start_year === effectiveStEndYear || effectiveTenureEndYear === st.start_year);
-                        // ▲▲▲▲▲ エラー修正箇所 ▲▲▲▲▲
+                        const stStart = st.start_year;
+                        const stEnd = (st.end_year < st.start_year) ? st.start_year : st.end_year;
 
-                        if (overlaps && isNotExcluded) {
+                        // ２人の在籍期間（年度）が１年でも重なっているかを判定します。
+                        // （最も遅い開始年） <= （最も早い終了年） であれば、重なっているとみなします。
+                        const latestStartYear = Math.max(tenureStart, stStart);
+                        const earliestEndYear = Math.min(tenureEnd, stEnd);
+                        
+                        const overlaps = latestStartYear <= earliestEndYear;
+                        // ▲▲▲▲▲ エラー修正箇所（新しい判定ロジック） ▲▲▲▲▲
+
+                        if (overlaps) {
                             colleagues.add(st.teacher_id);
                         }
                     }
