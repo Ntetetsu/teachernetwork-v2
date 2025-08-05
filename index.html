@@ -15,10 +15,28 @@
             overflow: hidden;
             background-color: #f7f7f7;
         }
+        /* 説明文のスタイル */
+        .explanation-box {
+            margin: 10px;
+            padding: 10px 15px;
+            background-color: #f0f8ff;
+            border-left: 5px solid #4682b4;
+            font-size: 14px;
+        }
+        .explanation-box ul {
+            margin: 5px 0 0 0;
+            padding-left: 20px;
+        }
+        .explanation-box li {
+            margin-bottom: 4px;
+        }
+        .controls {
+            padding: 10px;
+        }
         #container {
             display: flex;
             width: 100%;
-            height: calc(100% - 60px); /* Adjust height for the controls */
+            height: calc(100% - 180px); /* 説明文とコントロールの高さを考慮して調整 */
         }
         #history-panel {
             width: 30%;
@@ -53,7 +71,18 @@
     </style>
 </head>
 <body>
-<!-- cache buster -->
+<div class="explanation-box">
+    <strong>【使い方と注意点】</strong>
+    <ul>
+        <li>① フルネームを入れると同僚だった人の名前が出ます。性名はつなげて入れます（例：田中太郎）</li>
+        <li>② 2人分入れると別々に出ます。（つながりがある場合はネットワークがつながります。）</li>
+        <li>③ 出てきた名前をクリックするとその人の同僚も出ます。</li>
+        <li>④ 新規採用、産休育休、退職などは公開情報がないので上手に入りません。</li>
+        <li>⑤ 異動の発表の公開情報を使用しています。</li>
+        <li>⑥ 同姓同名などの理由でうまく表示されない場合がありますが、調整中です。</li>
+        <li>⑦ 勤務履歴の「除外」ボタンを押すと、その履歴を除いたネットワークに更新されます。</li>
+    </ul>
+</div>
 
 <div class="controls">
     <input type="text" id="teacherName" placeholder="教員の名前を入力...">
