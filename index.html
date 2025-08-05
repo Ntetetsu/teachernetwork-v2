@@ -222,8 +222,19 @@
                 const schoolTenures = validTenuresBySchoolMap.get(tenure.school) || [];
                 for (const st of schoolTenures) {
                     if (st.teacher_id !== teacher.id) {
-                        const overlaps = st.start_year < tenure.end_year && tenure.start_year < st.end_year;
-                        const isNotExcluded = !(tenure.start_year === st.end_year || tenure.end_year === st.start_year);
+                        
+                        // ▼▼▼▼▼ エラー修正箇所 ▼▼▼▼▼
+                        // 在籍終了年が開始年と同じかそれより前の場合、最低1年間は在籍したとみなし、計算上の終了年を+1する
+                        const effectiveTenureEndYear = (tenure.end_year <= tenure.start_year) ? tenure.start_year + 1 : tenure.end_year;
+                        const effectiveStEndYear = (st.end_year <= st.start_year) ? st.start_year + 1 : st.end_year;
+
+                        // 修正後の値で期間の重複を判定
+                        const overlaps = st.start_year < effectiveTenureEndYear && tenure.start_year < effectiveStEndYear;
+                        
+                        // 入れ替わり（A先生が去った年にB先生が来た、など）を除外する判定
+                        const isNotExcluded = !(tenure.start_year === effectiveStEndYear || effectiveTenureEndYear === st.start_year);
+                        // ▲▲▲▲▲ エラー修正箇所 ▲▲▲▲▲
+
                         if (overlaps && isNotExcluded) {
                             colleagues.add(st.teacher_id);
                         }
