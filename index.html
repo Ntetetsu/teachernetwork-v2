@@ -155,21 +155,20 @@
 
     const network = new vis.Network(container, { nodes, edges }, options);
 
-    // --- Data Loading ---
+// --- Data Loading ---
     async function loadData() {
         if (teachersDB.length > 0) return;
         try {
-            const [dbResponse, tenuresResponse1, tenuresResponse2] = await Promise.all([
+            const [dbResponse, tenuresResponse] = await Promise.all([
                 fetch('teachers_db.json'),
-                fetch('teachers_tenures_part1.json'),
-                fetch('teachers_tenures_part2.json')
+                fetch('teachers_tenures.json') // ← part1, part2 を1つにまとめました
             ]);
             teachersDB = await dbResponse.json();
-            const tenures1 = await tenuresResponse1.json();
-            const tenures2 = await tenuresResponse2.json();
+            const tenures = await tenuresResponse.json();
             
             let idCounter = 0;
-            teachersTenures = tenures1.concat(tenures2).map(t => ({ ...t, uniqueId: idCounter++ }));
+            // concat(結合)処理をなくし、そのままマッピングします
+            teachersTenures = tenures.map(t => ({ ...t, uniqueId: idCounter++ }));
 
             for (const teacher of teachersDB) {
                 teacherIdMap.set(teacher.id, teacher);
