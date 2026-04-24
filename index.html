@@ -282,7 +282,7 @@
                     item.style.backgroundColor = '#e0e0e0';
                     item.style.textDecoration = 'line-through';
                 }
-                const inferredText = tenure.inferred_start ? ' <span class="inferred">(推定)</span>' : '';
+                const inferredText = (tenure.inferred_start || tenure.inferred_end) ? ' <span class="inferred">[推定]</span>' : '';
                 const text = `<p class="school">${tenure.school}</p><p>期間: ${tenure.start_year} - ${tenure.end_year}${inferredText}</p>`;
                 const deleteButton = document.createElement('button');
                 deleteButton.textContent = '除外';
