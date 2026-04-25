@@ -81,7 +81,7 @@
     let nameMap = new Map();
     let searchedIds = new Set();
 
-    // ★ 物理エンジンの設定を変更し、ノード間を広く分散させる ★
+    // 物理エンジンの設定
     const options = {
         nodes: { 
             shape: 'dot', 
@@ -89,7 +89,6 @@
             font: { size: 14 } 
         },
         edges: { 
-            width: 2, 
             color: '#999', 
             smooth: { type: 'continuous' } 
         },
@@ -97,14 +96,14 @@
             enabled: true,
             solver: 'forceAtlas2Based',
             forceAtlas2Based: {
-                gravitationalConstant: -200, // ノード同士の反発力（マイナスが大きいほど強く反発して広がる）
-                centralGravity: 0.005,       // 全体を中心に向かわせる引力（小さいほど外に広がる）
-                springLength: 300,           // ノード間の基本の線の長さ（大きいほど間隔が開く）
-                springConstant: 0.02,        // 線がノードを引き寄せるバネの強さ（小さいほど反発力が勝ち、広がる）
-                avoidOverlap: 1              // ノード同士の重なりを回避する強さ
+                gravitationalConstant: -200,
+                centralGravity: 0.005,       
+                springLength: 300,  // デフォルトのバネの長さ（この後、個別の線で上書きします）
+                springConstant: 0.02,        
+                avoidOverlap: 1              
             },
             stabilization: {
-                iterations: 150,             // 初期表示時の安定化計算回数
+                iterations: 150,             
                 fit: true
             }
         }
@@ -112,7 +111,7 @@
 
     const network = new vis.Network(document.getElementById('mynetwork'), { nodes, edges }, options);
 
-    // データ読み込み（分割ファイル対応）
+    // データ読み込み
     async function init() {
         loading.style.display = 'block';
         try {
@@ -120,7 +119,6 @@
             db = await dbRes.json();
             db.forEach(t => nameMap.set(t.name, t.id));
 
-            // Tenureファイルを読み込む（part1〜part3など）
             const partFiles = ['teachers_tenures_part1.json', 'teachers_tenures_part2.json', 'teachers_tenures_part3.json'];
             const tenurePromises = partFiles.map(file => fetch(file).then(r => r.json()).catch(() => []));
             const tenureResults = await Promise.all(tenurePromises);
@@ -158,7 +156,6 @@
         }
     });
 
-    // 検索窓以外をクリックしたらサジェストを閉じる
     document.addEventListener('click', function(e) {
         if (!e.target.closest('.search-container')) {
             suggestionBox.style.display = 'none';
@@ -172,20 +169,14 @@
         const person = db.find(t => t.id === targetId);
         if (!person) return;
 
-        // ノード追加
         nodes.update({ id: person.id, label: person.name, color: '#ffc107', size: 25 });
-
-        // 本人の勤務履歴表示
         renderHistory(person);
 
-        // 同僚の探索
         const myTenures = tenures.filter(t => t.teacher_id === targetId);
         myTenures.forEach(myT => {
-            // 同じ学校にいた人を探す
             const colleagues = tenures.filter(t => t.school === myT.school && t.teacher_id !== targetId);
             
             colleagues.forEach(coT => {
-                // 期間の重なり判定ロジック
                 const overlapStart = Math.max(myT.start_year, coT.start_year);
                 const overlapEnd = Math.min(myT.end_year, coT.end_year);
 
@@ -193,7 +184,15 @@
                     const coPerson = db.find(t => t.id === coT.teacher_id);
                     if (!coPerson) return;
 
-                    // 推定判定
+                    // 重複期間の計算
+                    const overlapYears = overlapEnd - overlapStart;
+
+                    // ★ 関係の深さ（年数）に基づくデザイン調整 ★
+                    // 1年かぶるごとに線を30px短くし、互いを強く引き寄せる（最低80px）
+                    const dynamicLength = Math.max(80, 300 - (overlapYears * 30));
+                    // 1年かぶるごとに線を太くする（基本幅2px + 0.5pxずつ増加）
+                    const dynamicWidth = 2 + (overlapYears * 0.5);
+
                     const isInf = (overlapStart === myT.start_year && myT.inferred_start) || 
                                   (overlapStart === coT.start_year && coT.inferred_start) ||
                                   (overlapEnd === myT.end_year && myT.inferred_end) ||
@@ -206,13 +205,14 @@
                         to: coPerson.id,
                         label: `${myT.school}\n${overlapStart}-${overlapEnd}${isInf ? '[推定]' : ''}`,
                         dashes: isInf,
+                        length: dynamicLength, // 計算した長さを適用
+                        width: dynamicWidth,   // 計算した太さを適用
                         font: { size: 10, color: '#666', background: 'rgba(255,255,255,0.8)' }
                     });
                 }
             });
         });
         
-        // ネットワークが追加されたら、全体が見えるようにカメラを調整
         setTimeout(() => {
             network.fit({ animation: { duration: 1000, easingFunction: 'easeInOutQuad' } });
         }, 500);
