@@ -81,10 +81,33 @@
     let nameMap = new Map();
     let searchedIds = new Set();
 
+    // ★ 物理エンジンの設定を変更し、ノード間を広く分散させる ★
     const options = {
-        nodes: { shape: 'dot', size: 20, font: { size: 14 } },
-        edges: { width: 2, color: '#999', smooth: { type: 'continuous' } },
-        physics: { stabilization: true, barnesHut: { gravitationalConstant: -2000 } }
+        nodes: { 
+            shape: 'dot', 
+            size: 20, 
+            font: { size: 14 } 
+        },
+        edges: { 
+            width: 2, 
+            color: '#999', 
+            smooth: { type: 'continuous' } 
+        },
+        physics: { 
+            enabled: true,
+            solver: 'forceAtlas2Based',
+            forceAtlas2Based: {
+                gravitationalConstant: -200, // ノード同士の反発力（マイナスが大きいほど強く反発して広がる）
+                centralGravity: 0.005,       // 全体を中心に向かわせる引力（小さいほど外に広がる）
+                springLength: 300,           // ノード間の基本の線の長さ（大きいほど間隔が開く）
+                springConstant: 0.02,        // 線がノードを引き寄せるバネの強さ（小さいほど反発力が勝ち、広がる）
+                avoidOverlap: 1              // ノード同士の重なりを回避する強さ
+            },
+            stabilization: {
+                iterations: 150,             // 初期表示時の安定化計算回数
+                fit: true
+            }
+        }
     };
 
     const network = new vis.Network(document.getElementById('mynetwork'), { nodes, edges }, options);
@@ -107,6 +130,7 @@
         } catch (e) {
             console.error(e);
             alert("データの読み込みに失敗しました。ファイル名を確認してください。");
+            loading.style.display = 'none';
         }
     }
 
@@ -130,6 +154,13 @@
             });
             suggestionBox.style.display = 'block';
         } else {
+            suggestionBox.style.display = 'none';
+        }
+    });
+
+    // 検索窓以外をクリックしたらサジェストを閉じる
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.search-container')) {
             suggestionBox.style.display = 'none';
         }
     });
@@ -175,12 +206,16 @@
                         to: coPerson.id,
                         label: `${myT.school}\n${overlapStart}-${overlapEnd}${isInf ? '[推定]' : ''}`,
                         dashes: isInf,
-                        font: { size: 10, color: '#666' }
+                        font: { size: 10, color: '#666', background: 'rgba(255,255,255,0.8)' }
                     });
                 }
             });
         });
-        network.fit();
+        
+        // ネットワークが追加されたら、全体が見えるようにカメラを調整
+        setTimeout(() => {
+            network.fit({ animation: { duration: 1000, easingFunction: 'easeInOutQuad' } });
+        }, 500);
     }
 
     function renderHistory(person) {
@@ -205,12 +240,15 @@
 
     document.getElementById('search-button').onclick = () => {
         const id = nameMap.get(teacherInput.value);
-        if (id !== undefined) searchTeacher(id);
+        if (id !== undefined) {
+            suggestionBox.style.display = 'none';
+            searchTeacher(id);
+        }
         else alert("該当する教員が見つかりません。リストから選択してください。");
     };
 
     document.getElementById('clear-button').onclick = () => {
-        nodes.clear(); edges.clear(); historyList.innerHTML = ''; searchedIds.clear();
+        nodes.clear(); edges.clear(); historyList.innerHTML = ''; searchedIds.clear(); teacherInput.value = '';
     };
 
     network.on("click", (params) => {
