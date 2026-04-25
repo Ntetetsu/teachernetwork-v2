@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>教員ネットワーク可視化 v2（ブラウザ動的計算版）</title>
+    <title>教員ネットワーク可視化（ブラウザ動的・精密計算版）</title>
     <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <style type="text/css">
         html, body {
@@ -16,7 +16,6 @@
             display: flex; align-items: center; gap: 10px;
             background: #fff; border-bottom: 1px solid #ddd;
         }
-        /* サジェスト（オートコンプリート）スタイル */
         .search-container { position: relative; display: inline-block; }
         #teacherName { width: 250px; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
         .suggestions {
@@ -83,35 +82,24 @@
 
     // 物理エンジンの設定
     const options = {
-        nodes: { 
-            shape: 'dot', 
-            size: 20, 
-            font: { size: 14 } 
-        },
-        edges: { 
-            color: '#999', 
-            smooth: { type: 'continuous' } 
-        },
+        nodes: { shape: 'dot', size: 20, font: { size: 14 } },
+        edges: { color: '#999', smooth: { type: 'continuous' } },
         physics: { 
             enabled: true,
             solver: 'forceAtlas2Based',
             forceAtlas2Based: {
                 gravitationalConstant: -200,
                 centralGravity: 0.005,       
-                springLength: 300,  
+                springLength: 200,  
                 springConstant: 0.02,        
                 avoidOverlap: 1              
             },
-            stabilization: {
-                iterations: 150,             
-                fit: true
-            }
+            stabilization: { iterations: 150, fit: true }
         }
     };
 
     const network = new vis.Network(document.getElementById('mynetwork'), { nodes, edges }, options);
 
-    // データ読み込み（巨大なリンクファイルは読み込まない）
     async function init() {
         loading.style.display = 'block';
         try {
@@ -163,7 +151,7 @@
         }
     });
 
-    // ★ ここがブラウザでの動的計算のコア部分 ★
+    // 動的計算 ＋ 精密日付計算ロジック
     function searchTeacher(targetId) {
         if (searchedIds.has(targetId)) return;
         searchedIds.add(targetId);
@@ -171,44 +159,53 @@
         const person = db.find(t => t.id === targetId);
         if (!person) return;
 
-        // ノードを追加
         nodes.update({ id: person.id, label: person.name, color: '#ffc107', size: 25 });
         renderHistory(person);
 
-        // 検索された人の経歴を取り出す
         const myTenures = tenures.filter(t => t.teacher_id === targetId);
 
         myTenures.forEach(myT => {
-            // 同じ学校にいた「他の全員の経歴」を取り出す
             const colleagues = tenures.filter(t => t.school === myT.school && t.teacher_id !== targetId);
             
-            // 全員に対して期間の重なりをブラウザ上で計算する
             colleagues.forEach(coT => {
-                const overlapStart = Math.max(myT.start_year, coT.start_year);
-                const overlapEnd = Math.min(myT.end_year, coT.end_year);
+                // ★ 現在の「年度」データを「4月1日」「3月31日」の日付データに仮想的に変換 ★
+                const myStart = myT.start_date ? new Date(myT.start_date) : new Date(myT.start_year, 3, 1); // 4月1日
+                const myEnd = myT.end_date ? new Date(myT.end_date) : new Date(myT.end_year, 2, 31);       // 3月31日
+                const coStart = coT.start_date ? new Date(coT.start_date) : new Date(coT.start_year, 3, 1);
+                const coEnd = coT.end_date ? new Date(coT.end_date) : new Date(coT.end_year, 2, 31);
 
-                // 期間が重なっていた場合のみ、線をつなぐ
-                if (overlapStart < overlapEnd) {
+                // 重なり期間の計算
+                const overlapStart = myStart > coStart ? myStart : coStart;
+                const overlapEnd = myEnd < coEnd ? myEnd : coEnd;
+
+                // ミリ秒を「日数」に変換
+                const overlapDays = (overlapEnd - overlapStart) / (1000 * 60 * 60 * 24);
+
+                // ★ 日数が0より大きい（1日以上かぶっている）場合のみ線を引く
+                if (overlapDays > 0) {
                     const coPerson = db.find(t => t.id === coT.teacher_id);
                     if (!coPerson) return;
 
-                    const overlapYears = overlapEnd - overlapStart;
-
-                    // 関係の深さ（年数）に基づくデザイン調整
-                    const dynamicLength = Math.max(80, 300 - (overlapYears * 30));
+                    // 日数を年数に変換してデザインを調整
+                    const overlapYears = overlapDays / 365;
+                    const dynamicLength = Math.max(100, 350 - (overlapYears * 30));
                     const dynamicWidth = 2 + (overlapYears * 0.5);
 
-                    const isInf = (overlapStart === myT.start_year && myT.inferred_start) || 
-                                  (overlapStart === coT.start_year && coT.inferred_start) ||
-                                  (overlapEnd === myT.end_year && myT.inferred_end) ||
-                                  (overlapEnd === coT.end_year && coT.inferred_end);
+                    // 推定かどうかの判定
+                    const isInf = (myT.inferred_start && myStart.getTime() === overlapStart.getTime()) || 
+                                  (coT.inferred_start && coStart.getTime() === overlapStart.getTime()) ||
+                                  (myT.inferred_end && myEnd.getTime() === overlapEnd.getTime()) ||
+                                  (coT.inferred_end && coEnd.getTime() === overlapEnd.getTime());
+
+                    // 表示用テキスト（小数点第1位まで）
+                    const lblYears = Math.round(overlapYears * 10) / 10;
 
                     nodes.update({ id: coPerson.id, label: coPerson.name });
                     edges.update({
                         id: `${targetId}-${coPerson.id}-${myT.school}`,
                         from: targetId,
                         to: coPerson.id,
-                        label: `${myT.school}\n${overlapStart}-${overlapEnd}${isInf ? '[推定]' : ''}`,
+                        label: `${myT.school}\n${lblYears}年${isInf ? ' [推定]' : ''}`,
                         dashes: isInf,
                         length: dynamicLength, 
                         width: dynamicWidth,   
