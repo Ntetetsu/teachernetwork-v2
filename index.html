@@ -1,165 +1,261 @@
-from google.colab import files
-import pandas as pd
-import io
-import json
-import itertools
-from collections import defaultdict
-from datetime import datetime, timedelta
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>教員ネットワーク可視化 v2</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style type="text/css">
+        html, body {
+            font-family: sans-serif;
+            width: 100%; height: 100%; margin: 0; padding: 0;
+            overflow: hidden; background-color: #f7f7f7;
+        }
+        .controls {
+            padding: 10px; box-sizing: border-box; height: 60px;
+            display: flex; align-items: center; gap: 10px;
+            background: #fff; border-bottom: 1px solid #ddd;
+        }
+        /* サジェスト（オートコンプリート）スタイル */
+        .search-container { position: relative; display: inline-block; }
+        #teacherName { width: 250px; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        .suggestions {
+            position: absolute; border: 1px solid #ddd; background: #fff;
+            z-index: 1000; width: 100%; max-height: 200px; overflow-y: auto;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: none;
+        }
+        .suggestions div { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; }
+        .suggestions div:hover { background-color: #f0f0f0; }
 
-# --- 1. エクセルファイルのアップロード ---
-print("エクセルファイル（.xlsx）を選択してください:")
-uploaded = files.upload()
-file_name = list(uploaded.keys())[0]
-df = pd.read_excel(io.BytesIO(uploaded[file_name]))
+        #container { display: flex; width: 100%; height: calc(100% - 60px); }
+        #history-panel {
+            width: 300px; height: 100%; overflow-y: auto;
+            border-right: 1px solid lightgray; padding: 15px; background-color: #fafafa;
+        }
+        #mynetwork { flex-grow: 1; height: 100%; }
+        .history-item {
+            margin-bottom: 10px; padding: 10px; background: #fff;
+            border: 1px solid #ddd; border-radius: 5px; font-size: 0.9em;
+        }
+        .history-item b { color: #333; }
+        #loading {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.7); color: #fff; padding: 20px; border-radius: 10px;
+            display: none; z-index: 2000;
+        }
+        button { padding: 8px 15px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; }
+        button:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
 
-# --- 2. データ整理 ---
-df.columns = df.columns.str.strip()
-exclude_keywords = ['退職', '再任用', '期限付', '割愛', '教育委員会', '教委', 'センター', '研修', '事務局']
+<div class="controls">
+    <div class="search-container">
+        <input type="text" id="teacherName" placeholder="教員名を入力（例：内山）..." autocomplete="off">
+        <div id="suggestions" class="suggestions"></div>
+    </div>
+    <button id="search-button">検索</button>
+    <button id="clear-button" style="background:#6c757d">クリア</button>
+</div>
 
-# 異動日をdatetime型に変換（無い場合は年度の4月1日とする）
-def parse_date(row):
-    if pd.notna(row.get('異動日')):
-        try:
-            return pd.to_datetime(row['異動日'])
-        except:
-            pass
-    try:
-        return pd.to_datetime(f"{int(row['年度'])}-04-01")
-    except:
-        return None
+<div id="container">
+    <div id="history-panel">
+        <h3>勤務履歴</h3>
+        <div id="history-list"></div>
+    </div>
+    <div id="mynetwork"></div>
+</div>
 
-df['parsed_date'] = df.apply(parse_date, axis=1)
-df = df.dropna(subset=['parsed_date'])
+<div id="loading">データを読み込み中...</div>
 
-# 名簿
-unique_names = df['氏名'].dropna().unique()
-name_to_id = {name: int(i + 1000) for i, name in enumerate(unique_names)}
-teacher_db = [{"id": v, "name": k} for k, v in name_to_id.items()]
+<script type="text/javascript">
+    const nodes = new vis.DataSet([]);
+    const edges = new vis.DataSet([]);
+    const historyList = document.getElementById('history-list');
+    const teacherInput = document.getElementById('teacherName');
+    const suggestionBox = document.getElementById('suggestions');
+    const loading = document.getElementById('loading');
 
-# --- 3. イベントベースでの経歴（Tenures）の再構築 ---
-events_by_teacher = defaultdict(list)
+    let db = [];
+    let tenures = [];
+    let nameMap = new Map();
+    let searchedIds = new Set();
 
-for _, row in df.iterrows():
-    t_id = name_to_id[row['氏名']]
-    date = row['parsed_date']
-    role = str(row['役職']).strip() if pd.notna(row['役職']) else ""
-    
-    # 前所属（その学校から「離任」したイベント）
-    # ※ 離任日は異動日の「前日（3月31日など）」とする
-    prev_school = str(row['前所属']).strip()
-    if pd.notna(row['前所属']) and prev_school != 'nan' and not any(k in prev_school for k in exclude_keywords):
-        leave_date = date - timedelta(days=1)
-        events_by_teacher[t_id].append({
-            'school': prev_school,
-            'type': 'leave',
-            'date': leave_date,
-            'role': role
-        })
-        
-    # 新所属（その学校へ「着任」したイベント）
-    curr_school = str(row['新所属']).strip()
-    if pd.notna(row['新所属']) and curr_school != 'nan' and not any(k in curr_school for k in exclude_keywords):
-        events_by_teacher[t_id].append({
-            'school': curr_school,
-            'type': 'join',
-            'date': date,
-            'role': role
-        })
+    // ★ 物理エンジンの設定を変更し、ノード間を広く分散させる ★
+    const options = {
+        nodes: { 
+            shape: 'dot', 
+            size: 20, 
+            font: { size: 14 } 
+        },
+        edges: { 
+            width: 2, 
+            color: '#999', 
+            smooth: { type: 'continuous' } 
+        },
+        physics: { 
+            enabled: true,
+            solver: 'forceAtlas2Based',
+            forceAtlas2Based: {
+                gravitationalConstant: -200, // ノード同士の反発力（マイナスが大きいほど強く反発して広がる）
+                centralGravity: 0.005,       // 全体を中心に向かわせる引力（小さいほど外に広がる）
+                springLength: 300,           // ノード間の基本の線の長さ（大きいほど間隔が開く）
+                springConstant: 0.02,        // 線がノードを引き寄せるバネの強さ（小さいほど反発力が勝ち、広がる）
+                avoidOverlap: 1              // ノード同士の重なりを回避する強さ
+            },
+            stabilization: {
+                iterations: 150,             // 初期表示時の安定化計算回数
+                fit: true
+            }
+        }
+    };
 
-tenures = []
-for t_id, events in events_by_teacher.items():
-    # 学校ごとにイベントを分類し、日付順にソート
-    school_events = defaultdict(list)
-    for e in events:
-        school_events[e['school']].append(e)
-        
-    for school, evs in school_events.items():
-        evs.sort(key=lambda x: x['date'])
-        
-        i = 0
-        while i < len(evs):
-            e = evs[i]
-            if e['type'] == 'join':
-                start_date = e['date']
-                inf_start = False
-                
-                # 次のイベントが同じ学校の離任なら「確定期間」
-                if i + 1 < len(evs) and evs[i+1]['type'] == 'leave':
-                    end_date = evs[i+1]['date']
-                    inf_end = False
-                    i += 2 # 2つ分のイベントを処理した
-                else:
-                    # 離任記録がないので未来へ6年（約2190日）推定
-                    end_date = start_date + pd.DateOffset(years=6)
-                    inf_end = True
-                    i += 1
-            else: # e['type'] == 'leave'
-                # 着任記録がないまま離任記録だけがある場合（過去へ6年推定）
-                end_date = e['date']
-                start_date = end_date - pd.DateOffset(years=6)
-                inf_start = True
-                inf_end = False
-                i += 1
-                
-            tenures.append({
-                "teacher_id": t_id,
-                "school": school,
-                "start_date": start_date.strftime('%Y-%m-%d'),
-                "end_date": end_date.strftime('%Y-%m-%d'),
-                "start_year": start_date.year, # HTML互換性のため残す
-                "end_year": end_date.year,
-                "inferred_start": inf_start,
-                "inferred_end": inf_end
-            })
+    const network = new vis.Network(document.getElementById('mynetwork'), { nodes, edges }, options);
 
-# --- 4. 日付ベースでの同僚リンク計算 ---
-colleague_links = []
-school_groups = defaultdict(list)
-for t in tenures:
-    school_groups[t['school']].append(t)
+    // データ読み込み（分割ファイル対応）
+    async function init() {
+        loading.style.display = 'block';
+        try {
+            const dbRes = await fetch('teachers_db.json');
+            db = await dbRes.json();
+            db.forEach(t => nameMap.set(t.name, t.id));
 
-seen = set()
-for school, records in school_groups.items():
-    for t1, t2 in itertools.combinations(records, 2):
-        if t1['teacher_id'] == t2['teacher_id']: continue
-        
-        # 文字列の日付を比較して重なりをチェック
-        os_date = max(t1['start_date'], t2['start_date'])
-        oe_date = min(t1['end_date'], t2['end_date'])
-        
-        if os_date <= oe_date:
-            pair = tuple(sorted((t1['teacher_id'], t2['teacher_id'])))
-            if (pair, school, os_date, oe_date) in seen: continue
+            // Tenureファイルを読み込む（part1〜part3など）
+            const partFiles = ['teachers_tenures_part1.json', 'teachers_tenures_part2.json', 'teachers_tenures_part3.json'];
+            const tenurePromises = partFiles.map(file => fetch(file).then(r => r.json()).catch(() => []));
+            const tenureResults = await Promise.all(tenurePromises);
+            tenures = tenureResults.flat();
+
+            loading.style.display = 'none';
+        } catch (e) {
+            console.error(e);
+            alert("データの読み込みに失敗しました。ファイル名を確認してください。");
+            loading.style.display = 'none';
+        }
+    }
+
+    // サジェスト機能
+    teacherInput.addEventListener('input', (e) => {
+        const val = e.target.value;
+        suggestionBox.innerHTML = '';
+        if (val.length < 1) { suggestionBox.style.display = 'none'; return; }
+
+        const matches = db.filter(t => t.name.includes(val)).slice(0, 10);
+        if (matches.length > 0) {
+            matches.forEach(m => {
+                const div = document.createElement('div');
+                div.textContent = m.name;
+                div.onclick = () => {
+                    teacherInput.value = m.name;
+                    suggestionBox.style.display = 'none';
+                    searchTeacher(m.id);
+                };
+                suggestionBox.appendChild(div);
+            });
+            suggestionBox.style.display = 'block';
+        } else {
+            suggestionBox.style.display = 'none';
+        }
+    });
+
+    // 検索窓以外をクリックしたらサジェストを閉じる
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.search-container')) {
+            suggestionBox.style.display = 'none';
+        }
+    });
+
+    function searchTeacher(targetId) {
+        if (searchedIds.has(targetId)) return;
+        searchedIds.add(targetId);
+
+        const person = db.find(t => t.id === targetId);
+        if (!person) return;
+
+        // ノード追加
+        nodes.update({ id: person.id, label: person.name, color: '#ffc107', size: 25 });
+
+        // 本人の勤務履歴表示
+        renderHistory(person);
+
+        // 同僚の探索
+        const myTenures = tenures.filter(t => t.teacher_id === targetId);
+        myTenures.forEach(myT => {
+            // 同じ学校にいた人を探す
+            const colleagues = tenures.filter(t => t.school === myT.school && t.teacher_id !== targetId);
             
-            # 推定境界の判定
-            is_inf = (os_date == t1['start_date'] and t1['inferred_start']) or \
-                     (os_date == t2['start_date'] and t2['inferred_start']) or \
-                     (oe_date == t1['end_date'] and t1['inferred_end']) or \
-                     (oe_date == t2['end_date'] and t2['inferred_end'])
-            
-            # ラベル用に年だけ抽出
-            os_year = os_date.split('-')[0]
-            oe_year = oe_date.split('-')[0]
-            
-            colleague_links.append({
-                "from": t1['teacher_id'], "to": t2['teacher_id'], "school": school,
-                "label": f"{os_year}-{oe_year}" + (" [推定]" if is_inf else ""),
-                "is_inferred": is_inf, 
-                "period": [int(os_year), int(oe_year)],
-                "overlap_start": os_date,
-                "overlap_end": oe_date
-            })
-            seen.add((pair, school, os_date, oe_date))
+            colleagues.forEach(coT => {
+                // 期間の重なり判定ロジック
+                const overlapStart = Math.max(myT.start_year, coT.start_year);
+                const overlapEnd = Math.min(myT.end_year, coT.end_year);
 
-# --- 5. ファイル保存（軽量化） ---
-files_to_save = {
-    'teachers_db.json': teacher_db,
-    'teachers_tenures.json': tenures,
-    'colleague_links.json': colleague_links
-}
-for name, data in files_to_save.items():
-    with open(name, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False)
-    files.download(name)
+                if (overlapStart < overlapEnd) {
+                    const coPerson = db.find(t => t.id === coT.teacher_id);
+                    if (!coPerson) return;
 
-print("✅ 新しいロジックでJSONファイルを生成しました！")
+                    // 推定判定
+                    const isInf = (overlapStart === myT.start_year && myT.inferred_start) || 
+                                  (overlapStart === coT.start_year && coT.inferred_start) ||
+                                  (overlapEnd === myT.end_year && myT.inferred_end) ||
+                                  (overlapEnd === coT.end_year && coT.inferred_end);
+
+                    nodes.update({ id: coPerson.id, label: coPerson.name });
+                    edges.update({
+                        id: `${targetId}-${coPerson.id}-${myT.school}`,
+                        from: targetId,
+                        to: coPerson.id,
+                        label: `${myT.school}\n${overlapStart}-${overlapEnd}${isInf ? '[推定]' : ''}`,
+                        dashes: isInf,
+                        font: { size: 10, color: '#666', background: 'rgba(255,255,255,0.8)' }
+                    });
+                }
+            });
+        });
+        
+        // ネットワークが追加されたら、全体が見えるようにカメラを調整
+        setTimeout(() => {
+            network.fit({ animation: { duration: 1000, easingFunction: 'easeInOutQuad' } });
+        }, 500);
+    }
+
+    function renderHistory(person) {
+        const myTenures = tenures.filter(t => t.teacher_id === person.id)
+                                 .sort((a,b) => a.start_year - b.start_year);
+        
+        const header = document.createElement('div');
+        header.innerHTML = `<hr><b>${person.name}さんの経歴</b>`;
+        historyList.appendChild(header);
+
+        myTenures.forEach(t => {
+            const item = document.createElement('div');
+            item.className = 'history-item';
+            item.innerHTML = `
+                <b>${t.school}</b> (${t.role || '教員'})<br>
+                期間: ${t.start_year} 〜 ${t.end_year}<br>
+                <small style="color:gray">${t.inferred_start ? '開始' : ''}${t.inferred_end ? '終了' : ''}${t.inferred_start||t.inferred_end ? '推定' : '確定'}</small>
+            `;
+            historyList.appendChild(item);
+        });
+    }
+
+    document.getElementById('search-button').onclick = () => {
+        const id = nameMap.get(teacherInput.value);
+        if (id !== undefined) {
+            suggestionBox.style.display = 'none';
+            searchTeacher(id);
+        }
+        else alert("該当する教員が見つかりません。リストから選択してください。");
+    };
+
+    document.getElementById('clear-button').onclick = () => {
+        nodes.clear(); edges.clear(); historyList.innerHTML = ''; searchedIds.clear(); teacherInput.value = '';
+    };
+
+    network.on("click", (params) => {
+        if (params.nodes.length > 0) searchTeacher(params.nodes[0]);
+    });
+
+    init();
+</script>
+</body>
+</html>
