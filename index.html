@@ -2,169 +2,222 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>教員ネットワーク可視化ツール</title>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <style>
-        body { font-family: sans-serif; margin: 20px; background-color: #f8f9fa; }
-        #controls { margin-bottom: 20px; padding: 15px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        #search-input { padding: 8px; width: 250px; border: 1px solid #ddd; border-radius: 4px; }
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>教員ネットワーク可視化 v2</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style type="text/css">
+        html, body {
+            font-family: sans-serif;
+            width: 100%; height: 100%; margin: 0; padding: 0;
+            overflow: hidden; background-color: #f7f7f7;
+        }
+        .controls {
+            padding: 10px; box-sizing: border-box; height: 60px;
+            display: flex; align-items: center; gap: 10px;
+            background: #fff; border-bottom: 1px solid #ddd;
+        }
+        /* サジェスト（オートコンプリート）スタイル */
+        .search-container { position: relative; display: inline-block; }
+        #teacherName { width: 250px; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        .suggestions {
+            position: absolute; border: 1px solid #ddd; background: #fff;
+            z-index: 1000; width: 100%; max-height: 200px; overflow-y: auto;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: none;
+        }
+        .suggestions div { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; }
+        .suggestions div:hover { background-color: #f0f0f0; }
+
+        #container { display: flex; width: 100%; height: calc(100% - 60px); }
+        #history-panel {
+            width: 300px; height: 100%; overflow-y: auto;
+            border-right: 1px solid lightgray; padding: 15px; background-color: #fafafa;
+        }
+        #mynetwork { flex-grow: 1; height: 100%; }
+        .history-item {
+            margin-bottom: 10px; padding: 10px; background: #fff;
+            border: 1px solid #ddd; border-radius: 5px; font-size: 0.9em;
+        }
+        .history-item b { color: #333; }
+        #loading {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.7); color: #fff; padding: 20px; border-radius: 10px;
+            display: none; z-index: 2000;
+        }
         button { padding: 8px 15px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; }
         button:hover { background: #0056b3; }
-        #graph-container { width: 100%; height: 600px; background: white; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
-        .node circle { stroke: #fff; stroke-width: 1.5px; }
-        .node text { font-size: 12px; pointer-events: none; }
-        .link { stroke: #999; stroke-opacity: 0.4; }
-        #status { margin-top: 10px; color: #666; font-size: 0.9em; }
     </style>
 </head>
 <body>
 
-<div id="controls">
-    <h2>教員ネットワーク検索</h2>
-    <input type="text" id="search-input" placeholder="学校名を入力（例：京橋築地小）">
-    <button onclick="updateGraph()">ネットワークを表示</button>
-    <div id="status">データを読み込み中...</div>
+<div class="controls">
+    <div class="search-container">
+        <input type="text" id="teacherName" placeholder="教員名を入力（例：内山）..." autocomplete="off">
+        <div id="suggestions" class="suggestions"></div>
+    </div>
+    <button id="search-button">検索</button>
+    <button id="clear-button" style="background:#6c757d">クリア</button>
 </div>
 
-<div id="graph-container">
-    <svg id="graph" width="100%" height="100%"></svg>
+<div id="container">
+    <div id="history-panel">
+        <h3>勤務履歴</h3>
+        <div id="history-list"></div>
+    </div>
+    <div id="mynetwork"></div>
 </div>
 
-<script>
-let teachersDB = [];
-let allTenures = [];
+<div id="loading">データを読み込み中...</div>
 
-// 1. データの非同期読み込み
-async function loadData() {
-    const status = document.getElementById('status');
-    try {
-        const [db, p1, p2, p3] = await Promise.all([
-            fetch('teachers_db.json').then(r => r.json()),
-            fetch('teachers_tenures_part1.json').then(r => r.json()),
-            fetch('teachers_tenures_part2.json').then(r => r.json()),
-            fetch('teachers_tenures_part3.json').then(r => r.json())
-        ]);
-        
-        teachersDB = db;
-        allTenures = [...p1, ...p2, ...p3]; // 3つのファイルを1つに結合
-        
-        status.innerText = `準備完了：教員 ${teachersDB.length} 名、履歴 ${allTenures.length} 件`;
-    } catch (e) {
-        status.innerText = "エラー：データの読み込みに失敗しました。";
-        console.error(e);
-    }
-}
+<script type="text/javascript">
+    const nodes = new vis.DataSet([]);
+    const edges = new vis.DataSet([]);
+    const historyList = document.getElementById('history-list');
+    const teacherInput = document.getElementById('teacherName');
+    const suggestionBox = document.getElementById('suggestions');
+    const loading = document.getElementById('loading');
 
-// 2. ネットワークの動的生成と描画
-function updateGraph() {
-    const schoolName = document.getElementById('search-input').value.trim();
-    if (!schoolName) return;
+    let db = [];
+    let tenures = [];
+    let nameMap = new Map();
+    let searchedIds = new Set();
 
-    // その学校に所属していた履歴を抽出
-    const schoolRecords = allTenures.filter(t => t.school.includes(schoolName));
-    if (schoolRecords.length === 0) {
-        alert("該当する学校が見つかりません。");
-        return;
-    }
+    const options = {
+        nodes: { shape: 'dot', size: 20, font: { size: 14 } },
+        edges: { width: 2, color: '#999', smooth: { type: 'continuous' } },
+        physics: { stabilization: true, barnesHut: { gravitationalConstant: -2000 } }
+    };
 
-    // ノード（教員）の抽出
-    const teacherIds = [...new Set(schoolRecords.map(r => r.teacher_id))];
-    const nodes = teacherIds.map(id => {
-        const teacher = teachersDB.find(t => t.id === id);
-        return { id: id, name: teacher ? teacher.name : "不明" };
-    });
+    const network = new vis.Network(document.getElementById('mynetwork'), { nodes, edges }, options);
 
-    // リンク（繋がり）の計算：同じ学校で期間が重なっているペアを探す
-    const links = [];
-    for (let i = 0; i < schoolRecords.length; i++) {
-        for (let j = i + 1; j < schoolRecords.length; j++) {
-            const r1 = schoolRecords[i];
-            const r2 = schoolRecords[j];
-            
-            if (r1.teacher_id === r2.teacher_id) continue;
+    // データ読み込み（分割ファイル対応）
+    async function init() {
+        loading.style.display = 'block';
+        try {
+            const dbRes = await fetch('teachers_db.json');
+            db = await dbRes.json();
+            db.forEach(t => nameMap.set(t.name, t.id));
 
-            // 期間の重なり判定
-            const overlapStart = Math.max(r1.start_year, r2.start_year);
-            const overlapEnd = Math.min(r1.end_year, r2.end_year);
+            // Tenureファイルを読み込む（part1〜part3など）
+            const partFiles = ['teachers_tenures_part1.json', 'teachers_tenures_part2.json', 'teachers_tenures_part3.json'];
+            const tenurePromises = partFiles.map(file => fetch(file).then(r => r.json()).catch(() => []));
+            const tenureResults = await Promise.all(tenurePromises);
+            tenures = tenureResults.flat();
 
-            if (overlapStart < overlapEnd) {
-                links.push({
-                    source: r1.teacher_id,
-                    target: r2.teacher_id,
-                    value: overlapEnd - overlapStart
-                });
-            }
+            loading.style.display = 'none';
+        } catch (e) {
+            console.error(e);
+            alert("データの読み込みに失敗しました。ファイル名を確認してください。");
         }
     }
 
-    drawGraph(nodes, links);
-}
+    // サジェスト機能
+    teacherInput.addEventListener('input', (e) => {
+        const val = e.target.value;
+        suggestionBox.innerHTML = '';
+        if (val.length < 1) { suggestionBox.style.display = 'none'; return; }
 
-// 3. D3.jsによる描画処理
-function drawGraph(nodes, links) {
-    const svg = d3.select("#graph");
-    svg.selectAll("*").remove(); // 以前のグラフを消去
-
-    const width = document.getElementById('graph-container').clientWidth;
-    const height = 600;
-
-    const simulation = d3.forceSimulation(nodes)
-        .force("link", d3.forceLink(links).id(d => d.id).distance(100))
-        .force("charge", d3.forceManyBody().strength(-300))
-        .force("center", d3.forceCenter(width / 2, height / 2));
-
-    const link = svg.append("g")
-        .attr("class", "links")
-        .selectAll("line")
-        .data(links)
-        .enter().append("line")
-        .attr("class", "link")
-        .attr("stroke-width", d => Math.sqrt(d.value) * 2);
-
-    const node = svg.append("g")
-        .attr("class", "nodes")
-        .selectAll("g")
-        .data(nodes)
-        .enter().append("g")
-        .call(d3.drag()
-            .on("start", dragstarted)
-            .on("drag", dragged)
-            .on("end", dragended));
-
-    node.append("circle")
-        .attr("r", 8)
-        .attr("fill", "#007bff");
-
-    node.append("text")
-        .attr("dx", 12)
-        .attr("dy", ".35em")
-        .text(d => d.name);
-
-    simulation.on("tick", () => {
-        link.x1 = d => d.source.x;
-        link.y1 = d => d.source.y;
-        link.x2 = d => d.target.x;
-        link.y2 = d => d.target.y;
-
-        node.attr("transform", d => `translate(${d.x},${d.y})`);
+        const matches = db.filter(t => t.name.includes(val)).slice(0, 10);
+        if (matches.length > 0) {
+            matches.forEach(m => {
+                const div = document.createElement('div');
+                div.textContent = m.name;
+                div.onclick = () => {
+                    teacherInput.value = m.name;
+                    suggestionBox.style.display = 'none';
+                    searchTeacher(m.id);
+                };
+                suggestionBox.appendChild(div);
+            });
+            suggestionBox.style.display = 'block';
+        } else {
+            suggestionBox.style.display = 'none';
+        }
     });
 
-    function dragstarted(event, d) {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        d.fx = d.x; d.fy = d.y;
-    }
-    function dragged(event, d) {
-        d.fx = event.x; d.fy = event.y;
-    }
-    function dragended(event, d) {
-        if (!event.active) simulation.alphaTarget(0);
-        d.fx = null; d.fy = null;
-    }
-}
+    function searchTeacher(targetId) {
+        if (searchedIds.has(targetId)) return;
+        searchedIds.add(targetId);
 
-// 初期化
-loadData();
+        const person = db.find(t => t.id === targetId);
+        if (!person) return;
+
+        // ノード追加
+        nodes.update({ id: person.id, label: person.name, color: '#ffc107', size: 25 });
+
+        // 本人の勤務履歴表示
+        renderHistory(person);
+
+        // 同僚の探索
+        const myTenures = tenures.filter(t => t.teacher_id === targetId);
+        myTenures.forEach(myT => {
+            // 同じ学校にいた人を探す
+            const colleagues = tenures.filter(t => t.school === myT.school && t.teacher_id !== targetId);
+            
+            colleagues.forEach(coT => {
+                // 期間の重なり判定ロジック
+                const overlapStart = Math.max(myT.start_year, coT.start_year);
+                const overlapEnd = Math.min(myT.end_year, coT.end_year);
+
+                if (overlapStart < overlapEnd) {
+                    const coPerson = db.find(t => t.id === coT.teacher_id);
+                    if (!coPerson) return;
+
+                    // 推定判定
+                    const isInf = (overlapStart === myT.start_year && myT.inferred_start) || 
+                                  (overlapStart === coT.start_year && coT.inferred_start) ||
+                                  (overlapEnd === myT.end_year && myT.inferred_end) ||
+                                  (overlapEnd === coT.end_year && coT.inferred_end);
+
+                    nodes.update({ id: coPerson.id, label: coPerson.name });
+                    edges.update({
+                        id: `${targetId}-${coPerson.id}-${myT.school}`,
+                        from: targetId,
+                        to: coPerson.id,
+                        label: `${myT.school}\n${overlapStart}-${overlapEnd}${isInf ? '[推定]' : ''}`,
+                        dashes: isInf,
+                        font: { size: 10, color: '#666' }
+                    });
+                }
+            });
+        });
+        network.fit();
+    }
+
+    function renderHistory(person) {
+        const myTenures = tenures.filter(t => t.teacher_id === person.id)
+                                 .sort((a,b) => a.start_year - b.start_year);
+        
+        const header = document.createElement('div');
+        header.innerHTML = `<hr><b>${person.name}さんの経歴</b>`;
+        historyList.appendChild(header);
+
+        myTenures.forEach(t => {
+            const item = document.createElement('div');
+            item.className = 'history-item';
+            item.innerHTML = `
+                <b>${t.school}</b> (${t.role || '教員'})<br>
+                期間: ${t.start_year} 〜 ${t.end_year}<br>
+                <small style="color:gray">${t.inferred_start ? '開始' : ''}${t.inferred_end ? '終了' : ''}${t.inferred_start||t.inferred_end ? '推定' : '確定'}</small>
+            `;
+            historyList.appendChild(item);
+        });
+    }
+
+    document.getElementById('search-button').onclick = () => {
+        const id = nameMap.get(teacherInput.value);
+        if (id !== undefined) searchTeacher(id);
+        else alert("該当する教員が見つかりません。リストから選択してください。");
+    };
+
+    document.getElementById('clear-button').onclick = () => {
+        nodes.clear(); edges.clear(); historyList.innerHTML = ''; searchedIds.clear();
+    };
+
+    network.on("click", (params) => {
+        if (params.nodes.length > 0) searchTeacher(params.nodes[0]);
+    });
+
+    init();
 </script>
-
 </body>
 </html>
