@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>教員ネットワーク可視化（ブラウザ動的・精密計算版）</title>
+    <title>教員ネットワーク可視化（精密計算・自動マージ版）</title>
     <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <style type="text/css">
         html, body {
@@ -39,8 +39,8 @@
         .history-item b { color: #333; }
         #loading {
             position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            background: rgba(0,0,0,0.7); color: #fff; padding: 20px; border-radius: 10px;
-            display: none; z-index: 2000;
+            background: rgba(0,0,0,0.8); color: #fff; padding: 20px; border-radius: 10px;
+            display: none; z-index: 2000; text-align: center;
         }
         button { padding: 8px 15px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; }
         button:hover { background: #0056b3; }
@@ -65,7 +65,7 @@
     <div id="mynetwork"></div>
 </div>
 
-<div id="loading">データを読み込み中...</div>
+<div id="loading">データを読み込み中...<br><small>データの結合処理を行っています</small></div>
 
 <script type="text/javascript">
     const nodes = new vis.DataSet([]);
@@ -90,7 +90,7 @@
             forceAtlas2Based: {
                 gravitationalConstant: -200,
                 centralGravity: 0.005,       
-                springLength: 200,  
+                springLength: 300,  
                 springConstant: 0.02,        
                 avoidOverlap: 1              
             },
@@ -111,8 +111,69 @@
             const partFiles = ['teachers_tenures_part1.json', 'teachers_tenures_part2.json', 'teachers_tenures_part3.json'];
             const tenurePromises = partFiles.map(file => fetch(file).then(r => r.json()).catch(() => []));
             const tenureResults = await Promise.all(tenurePromises);
-            tenures = tenureResults.flat();
+            let rawTenures = tenureResults.flat();
 
+            // ★ 新機能：データの自動マージ（結合）処理 ★
+            // バラバラな「着任」と「離任」の記録を合体させ、確定期間を作ります
+            let mergedTenures = [];
+            db.forEach(teacher => {
+                let t_records = rawTenures.filter(t => t.teacher_id === teacher.id);
+                if (t_records.length === 0) return;
+                
+                // 学校名から「・副」や「［江東区］」などを除外したベース名でグループ化
+                let groups = {};
+                t_records.forEach(t => {
+                    let baseSchool = t.school.split(/[・［\(\（]/)[0].trim();
+                    if (!groups[baseSchool]) groups[baseSchool] = [];
+                    groups[baseSchool].push(t);
+                });
+
+                for (let sName in groups) {
+                    let records = groups[sName];
+                    records.sort((a, b) => a.start_year - b.start_year); // 古い順に並べる
+                    
+                    let current = null;
+                    for (let r of records) {
+                        if (!current) {
+                            current = { ...r };
+                            continue;
+                        }
+                        
+                        // 期間が重なっている、または連続している場合は合体！
+                        if (current.end_year >= r.start_year) {
+                            // 開始の確定処理
+                            if (!current.inferred_start) {
+                                // 既に確定なら何もしない
+                            } else if (!r.inferred_start) {
+                                current.start_year = r.start_year;
+                                current.inferred_start = false; // 推定フラグを消す
+                            } else {
+                                current.start_year = Math.min(current.start_year, r.start_year);
+                            }
+                            
+                            // 終了の確定処理
+                            if (!current.inferred_end) {
+                                // 既に確定なら何もしない
+                            } else if (!r.inferred_end) {
+                                current.end_year = r.end_year;
+                                current.inferred_end = false; // 推定フラグを消す
+                            } else {
+                                current.end_year = Math.max(current.end_year, r.end_year);
+                            }
+                            
+                            // 役職などの表示名は、より詳しい方（文字数が長い方）を残す
+                            if (r.school.length > current.school.length) current.school = r.school;
+                            if (r.role && (!current.role || r.role.length > current.role.length)) current.role = r.role;
+                        } else {
+                            mergedTenures.push(current);
+                            current = { ...r };
+                        }
+                    }
+                    if (current) mergedTenures.push(current);
+                }
+            });
+            
+            tenures = mergedTenures;
             loading.style.display = 'none';
         } catch (e) {
             console.error(e);
@@ -168,9 +229,9 @@
             const colleagues = tenures.filter(t => t.school === myT.school && t.teacher_id !== targetId);
             
             colleagues.forEach(coT => {
-                // ★ 現在の「年度」データを「4月1日」「3月31日」の日付データに仮想的に変換 ★
-                const myStart = myT.start_date ? new Date(myT.start_date) : new Date(myT.start_year, 3, 1); // 4月1日
-                const myEnd = myT.end_date ? new Date(myT.end_date) : new Date(myT.end_year, 2, 31);       // 3月31日
+                // 現在の「年度」データを「4月1日」「3月31日」の日付データに仮想的に変換（入れ違い排除のため）
+                const myStart = myT.start_date ? new Date(myT.start_date) : new Date(myT.start_year, 3, 1);
+                const myEnd = myT.end_date ? new Date(myT.end_date) : new Date(myT.end_year, 2, 31);
                 const coStart = coT.start_date ? new Date(coT.start_date) : new Date(coT.start_year, 3, 1);
                 const coEnd = coT.end_date ? new Date(coT.end_date) : new Date(coT.end_year, 2, 31);
 
@@ -181,7 +242,7 @@
                 // ミリ秒を「日数」に変換
                 const overlapDays = (overlapEnd - overlapStart) / (1000 * 60 * 60 * 24);
 
-                // ★ 日数が0より大きい（1日以上かぶっている）場合のみ線を引く
+                // 日数が0より大きい（1日以上かぶっている）場合のみ線を引く
                 if (overlapDays > 0) {
                     const coPerson = db.find(t => t.id === coT.teacher_id);
                     if (!coPerson) return;
@@ -231,10 +292,18 @@
         myTenures.forEach(t => {
             const item = document.createElement('div');
             item.className = 'history-item';
+            
+            // フラグから表示するテキストを決定
+            let infText = '';
+            if (t.inferred_start && t.inferred_end) infText = '開始・終了 推定';
+            else if (t.inferred_start) infText = '開始 推定';
+            else if (t.inferred_end) infText = '終了 推定';
+            else infText = '確定';
+
             item.innerHTML = `
                 <b>${t.school}</b> (${t.role || '教員'})<br>
                 期間: ${t.start_year} 〜 ${t.end_year}<br>
-                <small style="color:gray">${t.inferred_start ? '開始' : ''}${t.inferred_end ? '終了' : ''}${t.inferred_start||t.inferred_end ? '推定' : '確定'}</small>
+                <small style="color:${infText === '確定' ? '#28a745' : 'gray'}">${infText}</small>
             `;
             historyList.appendChild(item);
         });
